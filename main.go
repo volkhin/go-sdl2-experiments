@@ -19,6 +19,11 @@ const (
 	width, height        = 20, 20
 )
 
+var (
+	cellPadding  = 0
+	newCellDelay = 10 * time.Millisecond
+)
+
 type Color struct {
 	colorful.Color
 }
@@ -31,7 +36,7 @@ func (c Cell) String() string {
 	return fmt.Sprintf("[%v]", c.Color)
 }
 
-type Grid [height][width]Cell
+type Grid [height][width]*Cell
 
 func (g Grid) String() string {
 	result := ""
@@ -59,20 +64,23 @@ func (a *App) DrawGrid(g *Grid) error {
 	a.m.Lock()
 	defer a.m.Unlock()
 
-	a.renderer.SetDrawColor(255, 255, 255, 255)
+	a.renderer.SetDrawColor(0, 0, 0, 255)
 	a.renderer.Clear()
 
 	for i, row := range g {
 		for j, c := range row {
 			rect := sdl.Rect{
-				int32(j*cellWidth + 1),
-				int32(i*cellHeigh + 1),
-				int32(cellWidth - 2),
-				int32(cellHeigh - 2),
+				int32(j*cellWidth + cellPadding),
+				int32(i*cellHeigh + cellPadding),
+				int32(cellWidth - 2*cellPadding),
+				int32(cellHeigh - 2*cellPadding),
 			}
 
-			r, g, b := c.Color.RGB255()
-			a.renderer.SetDrawColor(r, g, b, 255)
+			var r, g, b uint8
+			if c != nil {
+				r, g, b = c.Color.RGB255()
+			}
+			a.renderer.SetDrawColor(r, g, b, 128)
 			a.renderer.FillRect(&rect)
 		}
 	}
@@ -82,17 +90,45 @@ func (a *App) DrawGrid(g *Grid) error {
 }
 
 func RandomColor() Color {
-	return Color{colorful.Hsv(rand.Float64()*360, 0.5, 0.8)}
+	hue := rand.Float64()*180 + 240
+	if hue >= 360 {
+		hue -= 360
+	}
+	return Color{colorful.Hsv(hue, 0.5, 0.8)}
 }
 
 func GenerateGrid() *Grid {
 	grid := &Grid{}
 	for i, row := range grid {
 		for j := range row {
-			grid[i][j].Color = RandomColor()
+			grid[i][j] = &Cell{Color: RandomColor()}
 		}
 	}
 	return grid
+}
+
+type point struct {
+	x, y int
+}
+
+func revealOneCell(grid *Grid) {
+	var nilCells []point
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			if grid[y][x] == nil {
+				nilCells = append(nilCells, point{x: x, y: y})
+			}
+		}
+	}
+
+	var pos point
+	if nilCells == nil {
+		pos = point{x: rand.Intn(width), y: rand.Intn(height)}
+	} else {
+		pos = nilCells[rand.Intn(len(nilCells))]
+	}
+
+	grid[pos.y][pos.x] = &Cell{Color: RandomColor()}
 }
 
 func main() {
@@ -125,6 +161,7 @@ func main() {
 	events := make(chan sdl.Event, 100)
 
 	appTomb := tomb.Tomb{}
+	var grid Grid
 
 	appTomb.Go(func() error {
 		for {
@@ -132,12 +169,12 @@ func main() {
 			case <-appTomb.Dying():
 				return tomb.ErrDying
 			default:
-				grid := GenerateGrid()
+				revealOneCell(&grid)
 				select {
-				case gridUpdate <- grid:
+				case gridUpdate <- &grid:
 				default:
 				}
-				time.Sleep(time.Second)
+				time.Sleep(newCellDelay)
 			}
 		}
 	})
@@ -178,7 +215,6 @@ func main() {
 
 		select {
 		case grid := <-gridUpdate:
-			log.Println("DrawGrid %v", time.Now())
 			app.DrawGrid(grid)
 		case <-appTomb.Dying():
 			close(events)
